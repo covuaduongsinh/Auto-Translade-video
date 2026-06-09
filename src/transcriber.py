@@ -1,6 +1,7 @@
 import json
+import os
+import subprocess
 import time
-import azure.cognitiveservices.speech as speechsdk
 import config
 from src.utils import setup_logging
 
@@ -8,6 +9,118 @@ logger = setup_logging("transcriber")
 
 
 def transcribe(audio_path: str, language: str) -> list[dict]:
+    """Speech-to-text dispatcher.
+
+    Picks the ASR backend from ``config.ASR_BACKEND`` ("groq" or "azure"),
+    runs recognition, then splits long segments. Both backends return the same
+    segment shape: ``{id, text, start, end, duration}`` in seconds.
+    """
+    backend = config.ASR_BACKEND
+    if backend == "groq":
+        segments = _transcribe_groq(audio_path, language)
+    elif backend == "azure":
+        segments = _transcribe_azure(audio_path, language)
+    else:
+        raise ValueError(
+            f"Unknown ASR_BACKEND '{backend}'. Use 'groq' or 'azure' in .env."
+        )
+
+    logger.info(f"Transcription complete: {len(segments)} raw segments")
+    segments = split_long_segments(segments, max_duration=10.0)
+    logger.info(f"After splitting: {len(segments)} segments")
+    return segments
+
+
+def _to_iso639_1(language: str) -> str:
+    """'en-US' -> 'en', 'zh-CN' -> 'zh', 'ja-JP' -> 'ja'."""
+    return language.split("-")[0].lower()
+
+
+def _transcribe_groq(audio_path: str, language: str) -> list[dict]:
+    """Transcribe via Groq Whisper (OpenAI-compatible audio API).
+
+    Compresses the 16 kHz mono WAV to FLAC first (smaller upload, stays under
+    Groq's 25 MB free-tier limit), then POSTs for verbose_json segments.
+    """
+    import requests
+
+    if not config.GROQ_API_KEY:
+        raise ValueError(
+            "GROQ_API_KEY not set in .env. Get a free key at https://console.groq.com "
+            "(API Keys → Create), then add GROQ_API_KEY=gsk_... to .env."
+        )
+
+    lang = _to_iso639_1(language)
+    flac_path = audio_path + ".groq.flac"
+
+    logger.info(f"Starting transcription (Groq {config.GROQ_ASR_MODEL}): {audio_path} (language: {lang})")
+    try:
+        # Compress to mono 16 kHz FLAC to shrink the upload.
+        comp = subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_path, "-ac", "1", "-ar", "16000", flac_path],
+            capture_output=True, encoding="utf-8", errors="replace",
+        )
+        upload_path = flac_path if comp.returncode == 0 and os.path.exists(flac_path) else audio_path
+        if upload_path == audio_path:
+            logger.warning("FLAC compression failed; uploading original WAV instead.")
+
+        with open(upload_path, "rb") as fh:
+            response = requests.post(
+                config.GROQ_API_URL,
+                headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"},
+                files={"file": (os.path.basename(upload_path), fh)},
+                data={
+                    "model": config.GROQ_ASR_MODEL,
+                    "response_format": "verbose_json",
+                    "language": lang,
+                    "timestamp_granularities[]": "segment",
+                },
+                timeout=120,
+            )
+    finally:
+        if os.path.exists(flac_path):
+            os.remove(flac_path)
+
+    if response.status_code == 401:
+        raise RuntimeError("Groq ASR error: 401 Unauthorized — kiểm tra lại GROQ_API_KEY trong .env.")
+    if response.status_code == 413:
+        raise RuntimeError(
+            "Groq ASR error: 413 — file audio quá lớn (giới hạn free 25 MB). "
+            "Dùng video ngắn hơn hoặc chia nhỏ."
+        )
+    if response.status_code != 200:
+        raise RuntimeError(f"Groq ASR error: HTTP {response.status_code} — {response.text[:300]}")
+
+    payload = response.json()
+    raw = payload.get("segments", [])
+
+    segments = []
+    for i, seg in enumerate(raw, start=1):
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        start = float(seg.get("start", 0.0))
+        end = float(seg.get("end", start))
+        segments.append({
+            "id": i,
+            "text": text,
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "duration": round(end - start, 3),
+        })
+        logger.info(f"Segment {i}: [{start:.1f}s-{end:.1f}s] {text[:50]}...")
+
+    if not segments:
+        raise RuntimeError("Groq ASR returned no speech segments.")
+    return segments
+
+
+def _transcribe_azure(audio_path: str, language: str) -> list[dict]:
+    import azure.cognitiveservices.speech as speechsdk
+
+    if not config.AZURE_SPEECH_KEY:
+        raise ValueError("AZURE_SPEECH_KEY not set in .env (required for ASR_BACKEND=azure).")
+
     speech_config = speechsdk.SpeechConfig(
         subscription=config.AZURE_SPEECH_KEY,
         region=config.AZURE_SPEECH_REGION,
@@ -78,12 +191,7 @@ def transcribe(audio_path: str, language: str) -> list[dict]:
     if errors:
         raise RuntimeError(f"Transcription failed: {'; '.join(errors)}")
 
-    logger.info(f"Transcription complete: {len(segments)} raw segments")
-
-    # Split long segments into ~MAX_SEGMENT_DURATION chunks
-    segments = split_long_segments(segments, max_duration=10.0)
-    logger.info(f"After splitting: {len(segments)} segments")
-
+    # Splitting/logging handled by the transcribe() dispatcher.
     return segments
 
 

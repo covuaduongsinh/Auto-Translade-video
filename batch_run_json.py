@@ -86,11 +86,11 @@ def main():
         url = video["video_url"]
         voice_type = video.get("voice_type", "male")
 
-        # Resolve voice ID from voice_type
+        # Resolve voice ID from voice_type (backend-aware; honours TTS_BACKEND_VI)
         if voice_type == "female":
-            voice_id = config.VIETNAMESE_VOICEID_FEMALE
+            voice_id = config.vi_voice("female")
         else:
-            voice_id = config.VIETNAMESE_VOICEID_MALE
+            voice_id = config.vi_voice("male")
 
         logger.info(f"[{i + 1}/{len(pending)}] ID={vid} | {url} | voice={voice_type}")
 

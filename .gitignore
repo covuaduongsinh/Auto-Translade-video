@@ -98,6 +98,8 @@ input/
 list_video.json
 get_content_url.json
 video_links.txt
+last_video.txt
+test youtube.json
 scripts/
 
 # ============================================================

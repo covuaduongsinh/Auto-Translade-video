@@ -16,11 +16,47 @@ logger = setup_logging("synthesizer_vi")
 
 POLL_INTERVAL = 2  # seconds between status checks
 POLL_TIMEOUT = int(os.getenv("LUCYLAB_POLL_TIMEOUT", "300"))  # max seconds to wait for TTS completion
+MAX_RETRIES = int(os.getenv("LUCYLAB_MAX_RETRIES", "5"))  # retries on transient server errors
+RETRY_STATUSES = {429, 500, 502, 503, 504}  # transient — LucyLab CDN/API hiccups
+
+
+def _request_with_retry(method: str, url: str, **kwargs):
+    """HTTP request that retries transient errors (5xx/429/timeouts) with backoff.
+
+    LucyLab's API and download CDN occasionally return 502/503; without retries
+    a single hiccup aborts a whole multi-segment dub. Retries up to MAX_RETRIES
+    times with exponential backoff before giving up.
+    """
+    last_exc = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.request(method, url, **kwargs)
+            if response.status_code in RETRY_STATUSES:
+                raise requests.HTTPError(
+                    f"{response.status_code} {response.reason}", response=response
+                )
+            response.raise_for_status()
+            return response
+        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
+            last_exc = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            # Don't retry genuine client errors (4xx except 429) — those won't fix themselves.
+            if status is not None and status not in RETRY_STATUSES:
+                raise
+            if attempt < MAX_RETRIES:
+                backoff = min(2 ** (attempt - 1), 10)
+                logger.warning(
+                    f"Transient error ({status or type(exc).__name__}) on {url[:60]}…; "
+                    f"retry {attempt}/{MAX_RETRIES - 1} in {backoff}s"
+                )
+                time.sleep(backoff)
+    raise RuntimeError(f"Request failed after {MAX_RETRIES} attempts: {last_exc}")
 
 
 def _call_lucylab(method: str, input_data: dict) -> dict:
-    """Call LucyLab JSON-RPC API."""
-    response = requests.post(
+    """Call LucyLab JSON-RPC API (with retry on transient errors)."""
+    response = _request_with_retry(
+        "POST",
         config.LUCYLAB_API_URL,
         headers={
             "Authorization": f"Bearer {config.VIETNAMESE_API_KEY}",
@@ -32,7 +68,6 @@ def _call_lucylab(method: str, input_data: dict) -> dict:
         },
         timeout=30,
     )
-    response.raise_for_status()
     data = response.json()
 
     if "error" in data:
@@ -64,9 +99,8 @@ def _wait_for_audio(export_id: str) -> str:
 
 
 def _download_audio(url: str, output_path: str) -> str:
-    """Download audio file from URL."""
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
+    """Download audio file from URL (with retry on transient CDN errors)."""
+    response = _request_with_retry("GET", url, timeout=60)
 
     with open(output_path, "wb") as f:
         f.write(response.content)
@@ -93,6 +127,13 @@ def synthesize_segment_vi(
     """
     if not voice_id:
         raise ValueError("voice_id is required. Use --voice male/female or set VIETNAMESE_VOICEID_MALE/FEMALE in .env")
+
+    # Dispatch to the Vbee backend when selected (env TTS_BACKEND_VI or --tts-backend).
+    # Lazy import keeps LucyLab-only runs free of any Vbee dependency.
+    if config.TTS_BACKEND_VI == "vbee":
+        from src.synthesizer_vbee import synthesize_segment_vbee
+        return synthesize_segment_vbee(text_vi, output_path, target_duration, voice_id)
+
     if not config.VIETNAMESE_API_KEY:
         raise ValueError("VIETNAMESE_API_KEY not set in .env")
 
