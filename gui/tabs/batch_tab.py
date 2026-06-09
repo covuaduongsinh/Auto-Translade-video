@@ -18,6 +18,7 @@ import customtkinter as ctk
 import config
 from pipeline_vi import run_pipeline_vi, _get_default_vi_output_dir, LANG_MAP
 from src.translator import translate_transcript
+from src.translator_claude import translate_via_claude_cli
 
 STATUS_COLORS = {
     "waiting": "gray60",
@@ -43,8 +44,10 @@ class BatchTab(ctk.CTkFrame):
         bar.grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 8))
         ctk.CTkButton(bar, text="Mở danh sách (JSON/Excel)…",
                       command=self._load).pack(side="left")
+        ctk.CTkButton(bar, text="Thêm file MP4…",
+                      command=self._add_files).pack(side="left", padx=8)
         ctk.CTkButton(bar, text="Thêm từ YouTube…",
-                      command=self._open_youtube_dialog).pack(side="left", padx=8)
+                      command=self._open_youtube_dialog).pack(side="left", padx=(0, 8))
         self.start_btn = ctk.CTkButton(bar, text="▶ Bắt đầu", command=self._start,
                                        state="disabled")
         self.start_btn.pack(side="left", padx=8)
@@ -52,6 +55,9 @@ class BatchTab(ctk.CTkFrame):
         self.lang_var = ctk.StringVar(value=config.DEFAULT_SOURCE_LANG)
         ctk.CTkOptionMenu(bar, width=110, variable=self.lang_var,
                           values=["en", "ja", "zh", "en-US", "ja-JP", "zh-CN"]).pack(side="left")
+        self.skip_video_var = ctk.BooleanVar(value=False)  # mặc định: đóng gói (ghép video)
+        ctk.CTkCheckBox(bar, text="Bỏ qua ghép video (chỉ tạo audio)",
+                        variable=self.skip_video_var).pack(side="left", padx=(16, 0))
 
         self.status_var = ctk.StringVar(value="Chưa nạp danh sách.")
         ctk.CTkLabel(self, textvariable=self.status_var, anchor="w").grid(
@@ -82,6 +88,14 @@ class BatchTab(ctk.CTkFrame):
         pending = sum(1 for v in self.videos if v.get("status") == "waiting")
         self.status_var.set(f"Đã nạp {len(self.videos)} video — {pending} chờ xử lý.")
         self.start_btn.configure(state="normal" if pending else "disabled")
+
+    def _add_files(self):
+        paths = filedialog.askopenfilenames(
+            title="Chọn các file video",
+            filetypes=[("Video", "*.mp4 *.mkv *.webm *.mov *.avi"), ("Tất cả", "*.*")],
+        )
+        if paths:
+            self.add_videos(list(paths))
 
     def add_videos(self, urls: list[str]):
         """Append YouTube URLs to the list (public API used by the YouTube tab).
@@ -241,42 +255,54 @@ class BatchTab(ctk.CTkFrame):
     def _run_all(self):
         pending = [v for v in self.videos if v.get("status") == "waiting"]
         ok = fail = 0
+        skip_video = self.skip_video_var.get()
         for i, video in enumerate(pending, start=1):
-            url = video.get("video_url")
+            src = video.get("video_url")
+            is_file = bool(src) and os.path.exists(src)
+            url = None if is_file else src
+            file_path = src if is_file else None
             gender = "female" if video.get("voice_type") == "female" else "male"
             config.TTS_BACKEND_VI = config.TTS_BACKEND_VI  # honour current .env
             voice_id = config.vi_voice(gender)
 
             self._post(lambda v=video: (self._set_status(v, "processing"),
                                         self.status_var.set(
-                                            f"[{i}/{len(pending)}] Đang xử lý: {url}")))
+                                            f"[{i}/{len(pending)}] Đang xử lý: {src}")))
             self._save_list()
             start = time.time()
             try:
                 phase1 = run_pipeline_vi(
-                    url=url, file_path=None, source_lang=self.lang_var.get(),
-                    voice_id=voice_id, skip_video=False,
+                    url=url, file_path=file_path, source_lang=self.lang_var.get(),
+                    voice_id=voice_id, skip_video=skip_video,
                     output_dir=_get_default_vi_output_dir(),
                 )
                 work_dir = phase1.get("work_dir") if phase1.get("status") == "translate_pending" else phase1.get("output_dir")
 
                 vi_path = os.path.join(work_dir, "transcript_vi.json")
                 if not os.path.exists(vi_path):
-                    with open(os.path.join(work_dir, "transcript_original.json"),
-                              encoding="utf-8") as f:
-                        segments = json.load(f)
-                    translated = translate_transcript(
-                        segments=segments,
-                        source_lang=LANG_MAP.get(self.lang_var.get(), self.lang_var.get()),
-                        api_key=config.GOOGLE_API_KEY,
-                        model_id=config.CONTENT_MODEL_ID,
-                    )
-                    with open(vi_path, "w", encoding="utf-8") as f:
-                        json.dump(translated, f, ensure_ascii=False, indent=2)
+                    try:
+                        translate_via_claude_cli(
+                            work_dir,
+                            source_lang=LANG_MAP.get(self.lang_var.get(), self.lang_var.get()),
+                            model=(config.CLAUDE_MODEL_ID or None),
+                        )
+                    except Exception:  # noqa: BLE001
+                        # Claude lỗi/không khả dụng → fallback Google để batch chạy tiếp
+                        with open(os.path.join(work_dir, "transcript_original.json"),
+                                  encoding="utf-8") as f:
+                            segments = json.load(f)
+                        translated = translate_transcript(
+                            segments=segments,
+                            source_lang=LANG_MAP.get(self.lang_var.get(), self.lang_var.get()),
+                            api_key=config.GOOGLE_API_KEY,
+                            model_id=config.CONTENT_MODEL_ID,
+                        )
+                        with open(vi_path, "w", encoding="utf-8") as f:
+                            json.dump(translated, f, ensure_ascii=False, indent=2)
 
                 report = run_pipeline_vi(
-                    url=url, file_path=None, source_lang=self.lang_var.get(),
-                    voice_id=voice_id, skip_video=False,
+                    url=url, file_path=file_path, source_lang=self.lang_var.get(),
+                    voice_id=voice_id, skip_video=skip_video,
                     output_dir=_get_default_vi_output_dir(), resume_dir=work_dir,
                 )
                 video["output_folder"] = report["session_id"]
