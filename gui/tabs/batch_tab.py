@@ -19,6 +19,8 @@ import config
 from pipeline_vi import run_pipeline_vi, _get_default_vi_output_dir, LANG_MAP
 from src.translator import translate_transcript
 from src.translator_claude import translate_via_claude_cli
+from src.translator_opencode import translate_via_opencode_cli
+from gui.translate_gate import TRANSLATE_MODES
 
 STATUS_COLORS = {
     "waiting": "gray60",
@@ -58,6 +60,24 @@ class BatchTab(ctk.CTkFrame):
         self.skip_video_var = ctk.BooleanVar(value=False)  # mặc định: đóng gói (ghép video)
         ctk.CTkCheckBox(bar, text="Bỏ qua ghép video (chỉ tạo audio)",
                         variable=self.skip_video_var).pack(side="left", padx=(16, 0))
+        ctk.CTkLabel(bar, text="Âm nền:").pack(side="left", padx=(16, 4))
+        self.bg_var = ctk.StringVar(value="duck")
+        ctk.CTkOptionMenu(bar, width=90, variable=self.bg_var,
+                          values=["duck", "demucs", "none"]).pack(side="left")
+        ctk.CTkLabel(bar, text="Dịch:").pack(side="left", padx=(16, 4))
+        self.tmode_var = ctk.StringVar(value="Opencode tự động (đọc & dịch)")
+        ctk.CTkOptionMenu(
+            bar, width=180, variable=self.tmode_var,
+            values=[
+                "AI tự động (Gemini)",
+                "Opencode tự động (đọc & dịch)",
+                "Claude tự động (đọc & dịch)",
+            ],
+        ).pack(side="left")
+        ctk.CTkLabel(bar, text="Model:").pack(side="left", padx=(12, 4))
+        self.opencode_model_var = ctk.StringVar(value=config.OPENCODE_DEFAULT_MODEL)
+        ctk.CTkOptionMenu(bar, width=160, variable=self.opencode_model_var,
+                          values=config.OPENCODE_FREE_MODELS).pack(side="left")
 
         self.status_var = ctk.StringVar(value="Chưa nạp danh sách.")
         ctk.CTkLabel(self, textvariable=self.status_var, anchor="w").grid(
@@ -271,39 +291,50 @@ class BatchTab(ctk.CTkFrame):
             self._save_list()
             start = time.time()
             try:
+                bg_mode = self.bg_var.get()
+                bg_duck_db = -12.0 if bg_mode == "duck" else 0.0
                 phase1 = run_pipeline_vi(
                     url=url, file_path=file_path, source_lang=self.lang_var.get(),
                     voice_id=voice_id, skip_video=skip_video,
                     output_dir=_get_default_vi_output_dir(),
+                    bg_mode=bg_mode, bg_duck_db=bg_duck_db,
                 )
                 work_dir = phase1.get("work_dir") if phase1.get("status") == "translate_pending" else phase1.get("output_dir")
 
                 vi_path = os.path.join(work_dir, "transcript_vi.json")
                 if not os.path.exists(vi_path):
-                    try:
-                        translate_via_claude_cli(
-                            work_dir,
-                            source_lang=LANG_MAP.get(self.lang_var.get(), self.lang_var.get()),
-                            model=(config.CLAUDE_MODEL_ID or None),
-                        )
-                    except Exception:  # noqa: BLE001
-                        # Claude lỗi/không khả dụng → fallback Google để batch chạy tiếp
+                    mode = TRANSLATE_MODES.get(self.tmode_var.get(), "opencode")
+                    source_lang = LANG_MAP.get(self.lang_var.get(), self.lang_var.get())
+                    if mode == "ai":
                         with open(os.path.join(work_dir, "transcript_original.json"),
                                   encoding="utf-8") as f:
                             segments = json.load(f)
                         translated = translate_transcript(
                             segments=segments,
-                            source_lang=LANG_MAP.get(self.lang_var.get(), self.lang_var.get()),
+                            source_lang=source_lang,
                             api_key=config.GOOGLE_API_KEY,
                             model_id=config.CONTENT_MODEL_ID,
                         )
                         with open(vi_path, "w", encoding="utf-8") as f:
                             json.dump(translated, f, ensure_ascii=False, indent=2)
+                    elif mode == "claude":
+                        translate_via_claude_cli(
+                            work_dir,
+                            source_lang=source_lang,
+                            model=(config.CLAUDE_MODEL_ID or None),
+                        )
+                    else:  # opencode (default)
+                        translate_via_opencode_cli(
+                            work_dir,
+                            source_lang=source_lang,
+                            model=self.opencode_model_var.get(),
+                        )
 
                 report = run_pipeline_vi(
                     url=url, file_path=file_path, source_lang=self.lang_var.get(),
                     voice_id=voice_id, skip_video=skip_video,
                     output_dir=_get_default_vi_output_dir(), resume_dir=work_dir,
+                    bg_mode=bg_mode, bg_duck_db=bg_duck_db,
                 )
                 video["output_folder"] = report["session_id"]
                 video["segments"] = report["total_segments"]

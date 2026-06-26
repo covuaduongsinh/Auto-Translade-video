@@ -69,6 +69,7 @@ class PipelineWorker(threading.Thread):
         on_error,
         resume_dir: str | None = None,
         download_quality: dict | None = None,
+        opencode_model: str | None = None,
     ):
         super().__init__(daemon=True)
         self.url = url
@@ -85,6 +86,7 @@ class PipelineWorker(threading.Thread):
         self.on_done = on_done
         self.on_error = on_error
         self.resume_dir = resume_dir
+        self.opencode_model = opencode_model
         self._cancel = threading.Event()
 
     def cancel(self):
@@ -130,7 +132,7 @@ class PipelineWorker(threading.Thread):
                 return
 
             # --- Translate gate (blocks until transcript_vi.json is ready) ---
-            proceed = self.gate_handler(work_dir)
+            proceed = self.gate_handler(work_dir, opencode_model=self.opencode_model)
             if not proceed or self._cancel.is_set():
                 self.on_error(RuntimeError("Đã huỷ ở bước dịch."))
                 return

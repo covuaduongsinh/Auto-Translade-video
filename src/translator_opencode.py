@@ -1,12 +1,10 @@
-"""Opencode (headless) translator — let the local ``opencode`` CLI read the work
-directory and write ``transcript_vi.json`` itself, then validate + normalize.
+"""Opencode (headless) translator — translates transcript segments via the local
+``opencode`` CLI in chunks to avoid upstream idle timeouts with slower free models.
 
-Used by the desktop GUI's "Opencode tự động" translate mode. Runs the user's
-installed opencode CLI headlessly pointed at the session folder: opencode reads
-``transcript_original.json`` and creates ``transcript_vi.json`` (keeping every
-field, adding ``text_vi``). Python then validates all ids are covered and
-rewrites the file from the originals + the translations so downstream timing
-fields are always intact.
+Used by the desktop GUI's "Opencode tự động" translate mode. opencode reads
+``transcript_original.json`` and creates ``transcript_vi.json``. Python validates
+all ids are covered and rewrites the final file from the originals + the
+translations so downstream timing fields are always intact.
 
 Includes an automatic database-schema fix for the known opencode v1.17.x bug
 where ``replacement_seq`` and ``revision`` columns are missing from the SQLite
@@ -17,6 +15,8 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import tempfile
+import time
 
 from src.utils import setup_logging
 
@@ -24,6 +24,14 @@ logger = setup_logging("translator_opencode")
 
 ORIGINAL_NAME = "transcript_original.json"
 VI_NAME = "transcript_vi.json"
+
+# Number of segments per opencode chunk. Larger = fewer API calls but higher
+# chance of "Upstream idle timeout exceeded" on slow free models.
+CHUNK_SIZE = 10
+
+# Retry config for transient upstream timeouts.
+MAX_RETRIES = 2
+RETRY_DELAY_SECONDS = 3
 
 _LANG_NAMES = {
     "en-US": "English",
@@ -56,8 +64,6 @@ def _fix_opencode_db() -> bool:
     every table and ``revision`` on ``session_context_epoch``, but the bundled
     migration system fails to add these columns. This function finds the
     opencode database and adds the missing columns directly via sqlite3.
-
-    Returns True if any columns were added, False if DB was already OK.
     """
     db_path = os.path.expanduser(r"~\.local\share\opencode\opencode.db")
     if not os.path.exists(db_path):
@@ -107,6 +113,93 @@ def _build_prompt(source_name: str) -> str:
     )
 
 
+def _run_opencode_once(
+    work_dir: str,
+    source_name: str,
+    model: str | None,
+    timeout: int,
+) -> subprocess.CompletedProcess:
+    """Run opencode once and return the CompletedProcess."""
+    exe = _resolve_opencode()
+    prompt = _build_prompt(source_name)
+    cmd = [exe, "run", prompt, "--dangerously-skip-permissions"]
+    if model:
+        cmd += ["--model", model]
+
+    return subprocess.run(
+        cmd,
+        cwd=work_dir,
+        timeout=timeout,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        stdin=subprocess.DEVNULL,
+    )
+
+
+def _is_transient_timeout(tail: str) -> bool:
+    return "timeout" in tail.lower() or "upstream idle" in tail.lower()
+
+
+def _translate_chunk(
+    chunk: list[dict],
+    source_name: str,
+    model: str | None,
+    timeout: int,
+) -> dict[int, str]:
+    """Translate one chunk of segments via opencode CLI.
+
+    Runs in a temporary directory with only this chunk's transcript to keep the
+    prompt small and avoid upstream idle timeouts. Returns {id: text_vi}.
+    """
+    with tempfile.TemporaryDirectory(prefix="opencode_translate_") as tmpdir:
+        orig_path = os.path.join(tmpdir, ORIGINAL_NAME)
+        vi_path = os.path.join(tmpdir, VI_NAME)
+
+        with open(orig_path, "w", encoding="utf-8") as f:
+            json.dump(chunk, f, ensure_ascii=False, indent=2)
+
+        last_tail = ""
+        for attempt in range(1, MAX_RETRIES + 1):
+            logger.info(
+                f"  Chunk {chunk[0]['id']}-{chunk[-1]['id']} "
+                f"(attempt {attempt}/{MAX_RETRIES})"
+            )
+            proc = _run_opencode_once(tmpdir, source_name, model, timeout)
+
+            if proc.returncode == 0 and os.path.exists(vi_path):
+                with open(vi_path, encoding="utf-8") as f:
+                    translated = json.load(f)
+                if isinstance(translated, list):
+                    return {
+                        int(it["id"]): str(it.get("text_vi", "")).strip()
+                        for it in translated
+                        if isinstance(it, dict) and "id" in it
+                    }
+
+            tail = (proc.stderr or proc.stdout or "").strip()[-500:]
+            last_tail = tail
+
+            # Auto-fix DB if needed and retry immediately
+            if "no such column" in tail and (
+                "replacement_seq" in tail or "revision" in tail
+            ):
+                logger.warning("Detected opencode DB schema bug — auto-fixing...")
+                if _fix_opencode_db():
+                    continue
+
+            if _is_transient_timeout(tail) and attempt < MAX_RETRIES:
+                logger.warning(
+                    f"Opencode timeout, retrying in {RETRY_DELAY_SECONDS}s..."
+                )
+                time.sleep(RETRY_DELAY_SECONDS)
+                continue
+
+            break
+
+        raise ValueError(f"Opencode lỗi khi dịch chunk: {last_tail}")
+
+
 def translate_via_opencode_cli(
     work_dir,
     source_lang: str,
@@ -116,11 +209,10 @@ def translate_via_opencode_cli(
 ) -> None:
     """Translate ``transcript_original.json`` -> ``transcript_vi.json`` via opencode.
 
-    Runs the ``opencode`` CLI headlessly with ``cwd=work_dir`` so opencode reads the
-    original transcript and writes the Vietnamese one itself. After the run, validates
-    every original id has a non-empty ``text_vi`` and rewrites the file from the
-    originals + translations (guaranteeing all timing fields + order). Raises
-    ``ValueError`` on any failure so the caller can fall back to manual editing.
+    Splits long transcripts into chunks of ``CHUNK_SIZE`` segments to avoid
+    upstream idle timeouts with free models. Each chunk is retried on transient
+    timeouts. After all chunks finish, combines the results into a single
+    ``transcript_vi.json`` with all original keys preserved.
     """
     work_dir = os.fspath(work_dir)
     orig_path = os.path.join(work_dir, ORIGINAL_NAME)
@@ -136,87 +228,34 @@ def translate_via_opencode_cli(
     if os.path.exists(vi_path):
         os.remove(vi_path)
 
-    exe = _resolve_opencode()
-    prompt = _build_prompt(_lang_name(source_lang))
-
-    cmd = [exe, "run", prompt, "--dangerously-skip-permissions"]
-    if model:
-        cmd += ["--model", model]
-
+    source_name = _lang_name(source_lang)
     logger.info(
         f"Running opencode translate in {work_dir} "
-        f"({len(segments)} segments, {_lang_name(source_lang)} -> Vietnamese)"
+        f"({len(segments)} segments, {source_name} -> Vietnamese, model={model})"
     )
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=work_dir,
-            timeout=timeout,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            stdin=subprocess.DEVNULL,
-        )
-    except FileNotFoundError as e:
-        raise ValueError(f"Không chạy được opencode CLI: {e}")
-    except subprocess.TimeoutExpired:
-        raise ValueError(f"Opencode chạy quá {timeout}s mà chưa xong — thử lại hoặc nhập tay.")
+    # Split into chunks and translate each one
+    translations: dict[int, str] = {}
+    for i in range(0, len(segments), CHUNK_SIZE):
+        chunk = segments[i : i + CHUNK_SIZE]
+        chunk_translations = _translate_chunk(chunk, source_name, model, timeout)
+        translations.update(chunk_translations)
 
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip()[-500:]
-
-        # Auto-fix the known DB schema bug and retry once
-        if "no such column" in tail and ("replacement_seq" in tail or "revision" in tail):
-            logger.warning("Detected opencode DB schema bug — auto-fixing and retrying...")
-            if _fix_opencode_db():
-                proc = subprocess.run(
-                    cmd,
-                    cwd=work_dir,
-                    timeout=timeout,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    stdin=subprocess.DEVNULL,
-                )
-                if proc.returncode != 0:
-                    tail = (proc.stderr or proc.stdout or "").strip()[-500:]
-                    raise ValueError(f"Opencode lỗi sau khi fix DB (mã {proc.returncode}): {tail}")
-            else:
-                raise ValueError(f"Opencode lỗi DB và không fix được: {tail}")
-        else:
-            raise ValueError(f"Opencode lỗi (mã {proc.returncode}): {tail}")
-
-    if not os.path.exists(vi_path):
-        raise ValueError("Opencode không tạo được transcript_vi.json.")
-    with open(vi_path, encoding="utf-8") as f:
-        try:
-            translated = json.load(f)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"transcript_vi.json không phải JSON hợp lệ: {e}")
-    if not isinstance(translated, list):
-        raise ValueError("transcript_vi.json phải là một JSON array.")
-
-    # Map id (so sánh dạng chuỗi để tránh lệch int/str) -> text_vi.
-    by_id: dict[str, str] = {}
-    for item in translated:
-        if isinstance(item, dict) and "id" in item:
-            by_id[str(item["id"])] = str(item.get("text_vi", "")).strip()
-
-    missing = [s["id"] for s in segments if not by_id.get(str(s["id"]))]
+    # Validate all ids are translated
+    missing = [s["id"] for s in segments if s["id"] not in translations]
     if missing:
         raise ValueError(
             f"Dịch thiếu {len(missing)} segment (ids: {missing[:10]}...). "
             "Thử lại hoặc dùng trình soạn dịch để bổ sung."
         )
 
-    # Chuẩn hóa: dựng lại từ bản gốc + text_vi để đảm bảo đủ field/đúng thứ tự, kể cả
-    # khi opencode lỡ đổi cấu trúc hay bỏ sót field timing.
+    # Build normalized output from originals + translations
     normalized = []
     for seg in segments:
         new_seg = dict(seg)
-        new_seg["text_vi"] = by_id[str(seg["id"])]
+        new_seg["text_vi"] = translations[seg["id"]]
         normalized.append(new_seg)
+
     with open(vi_path, "w", encoding="utf-8") as f:
         json.dump(normalized, f, ensure_ascii=False, indent=2)
 

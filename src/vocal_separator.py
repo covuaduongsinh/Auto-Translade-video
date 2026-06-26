@@ -9,9 +9,15 @@ Demucs is invoked through its Python API rather than the ``demucs.separate``
 CLI so the writer never touches ``torchaudio.save`` — that path requires
 ``torchcodec`` on torchaudio>=2.10, whose Windows wheels rely on a specific
 FFmpeg ABI we can't guarantee.  Audio is written via ``soundfile`` instead.
+
+To avoid silent hangs on CPU, Demucs inference runs in a separate process with
+a configurable timeout (``config.DEMUCS_TIMEOUT_SECONDS``).
 """
+import multiprocessing as mp
 import os
 import subprocess
+import threading
+import time
 
 import config
 from src.utils import setup_logging
@@ -81,7 +87,61 @@ def separate_vocals(
 
 
 def _run_demucs(input_wav: str, vocals_out: str, no_vocals_out: str, model_name: str) -> None:
-    """Run Demucs via its Python API; write stems with soundfile."""
+    """Run Demucs via its Python API; write stems with soundfile.
+
+    To avoid blocking the main thread indefinitely, the actual inference is
+    offloaded to a child process with a timeout. If the timeout is exceeded we
+    abort and the caller falls back to a silent base.
+    """
+    timeout = getattr(config, "DEMUCS_TIMEOUT_SECONDS", 1800)
+
+    # Guard required for Windows spawn: child re-imports the main module.
+    ctx = mp.get_context("spawn")
+    proc = ctx.Process(
+        target=_demucs_worker,
+        args=(input_wav, vocals_out, no_vocals_out, model_name),
+    )
+
+    logger.info(f"Starting Demucs worker (timeout {timeout}s) for {input_wav}")
+    proc.start()
+
+    # Heartbeat: log elapsed time so users know it is still running.
+    start = time.time()
+    while proc.is_alive():
+        elapsed = time.time() - start
+        if elapsed >= timeout:
+            logger.warning(f"Demucs exceeded {timeout}s timeout; terminating worker.")
+            proc.terminate()
+            proc.join(timeout=10.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=5.0)
+            raise RuntimeError(f"Demucs timed out after {timeout}s")
+
+        int_elapsed = int(elapsed)
+        if int_elapsed > 0 and int_elapsed % 60 == 0:
+            logger.info(f"Demucs still running… {int_elapsed // 60} minute(s) elapsed")
+        proc.join(timeout=1.0)
+
+    proc.join(timeout=5.0)
+    if proc.is_alive():
+        logger.warning("Demucs worker did not stop; terminating.")
+        proc.terminate()
+        proc.join(timeout=5.0)
+
+    if proc.exitcode != 0:
+        raise RuntimeError(
+            f"Demucs worker failed (exit code {proc.exitcode})"
+        )
+
+
+def _demucs_worker(
+    input_wav: str,
+    vocals_out: str,
+    no_vocals_out: str,
+    model_name: str,
+) -> None:
+    """Child-process entry point that runs the actual Demucs inference."""
     import numpy as np
     import soundfile as sf
     import torch
@@ -115,6 +175,7 @@ def _run_demucs(input_wav: str, vocals_out: str, no_vocals_out: str, model_name:
 
     _save_wav(vocals_out, vocals.cpu().numpy(), model.samplerate)
     _save_wav(no_vocals_out, no_vocals.cpu().numpy(), model.samplerate)
+    logger.info("Demucs worker finished")
 
 
 def _save_wav(path: str, arr, sample_rate: int) -> None:

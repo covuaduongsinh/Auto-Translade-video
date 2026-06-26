@@ -37,14 +37,14 @@ TRANSLATE_MODES = {
 
 class TranslateGateMixin:
     # ----- translate gate: called on WORKER thread, blocks until UI is done ----
-    def _gate_handler(self, work_dir: str) -> bool:
+    def _gate_handler(self, work_dir: str, *, opencode_model: str | None = None) -> bool:
         ev = threading.Event()
         holder = {"proceed": False}
-        self._ui_queue.put(lambda: self._open_gate(work_dir, ev, holder))
+        self._ui_queue.put(lambda: self._open_gate(work_dir, ev, holder, opencode_model))
         ev.wait()
         return holder["proceed"]
 
-    def _open_gate(self, work_dir, ev, holder):
+    def _open_gate(self, work_dir, ev, holder, opencode_model=None):
         mode = TRANSLATE_MODES[self.tmode_var.get()]
 
         def finish(proceed: bool):
@@ -61,7 +61,12 @@ class TranslateGateMixin:
             self._run_ai_translate(work_dir, review=(mode == "ai_review"), finish=finish)
         elif mode in ("opencode", "opencode_review"):
             self.status_var.set("Đang nhờ opencode đọc thư mục & dịch…")
-            self._run_opencode_translate(work_dir, review=(mode == "opencode_review"), finish=finish)
+            self._run_opencode_translate(
+                work_dir,
+                review=(mode == "opencode_review"),
+                finish=finish,
+                model=opencode_model,
+            )
         elif mode in ("claude", "claude_review"):
             self.status_var.set("Đang nhờ Claude đọc thư mục & dịch…")
             self._run_claude_translate(work_dir, review=(mode == "claude_review"), finish=finish)
@@ -103,7 +108,7 @@ class TranslateGateMixin:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _run_opencode_translate(self, work_dir, review: bool, finish):
+    def _run_opencode_translate(self, work_dir, review: bool, finish, model: str | None = None):
         """Let the local opencode CLI read work_dir and write transcript_vi.json."""
         from src.translator_opencode import translate_via_opencode_cli
 
@@ -114,7 +119,7 @@ class TranslateGateMixin:
                 translate_via_opencode_cli(
                     work_dir,
                     source_lang=LANG_MAP.get(self.lang_var.get(), self.lang_var.get()),
-                    model=(config.OPENCODE_MODEL_ID or None),
+                    model=model,
                 )
                 if review:
                     self._ui_queue.put(

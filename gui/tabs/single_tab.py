@@ -87,6 +87,11 @@ class SingleTab(TranslateGateMixin, ctk.CTkFrame):
         ctk.CTkOptionMenu(form, values=list(TRANSLATE_MODES.keys()),
                           variable=self.tmode_var).pack(fill="x", padx=12)
 
+        row("Model dịch (opencode)")
+        self.opencode_model_var = ctk.StringVar(value=config.OPENCODE_DEFAULT_MODEL)
+        ctk.CTkOptionMenu(form, values=config.OPENCODE_FREE_MODELS,
+                          variable=self.opencode_model_var).pack(fill="x", padx=12)
+
         row("Âm nền gốc")
         self.bg_var = ctk.StringVar(value="duck")
         ctk.CTkOptionMenu(form, values=["demucs", "duck", "none"], variable=self.bg_var,
@@ -228,6 +233,7 @@ class SingleTab(TranslateGateMixin, ctk.CTkFrame):
             gate_handler=self._gate_handler,
             on_done=lambda report: self._ui_queue.put(lambda: self._on_done(report)),
             on_error=lambda exc: self._ui_queue.put(lambda: self._on_error(exc)),
+            opencode_model=self.opencode_model_var.get(),
         )
         self.worker.start()
 

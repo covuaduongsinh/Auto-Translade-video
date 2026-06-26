@@ -83,7 +83,28 @@ CONTENT_MODEL_ID = os.getenv("content_model_id", "gemini-2.0-flash")
 # CLAUDE_BIN / CLAUDE_PERMISSION_MODE are read directly by translator_claude.py.
 CLAUDE_MODEL_ID = os.getenv("CLAUDE_MODEL_ID", "")
 
+# Demucs vocal-separation timeout (seconds). On CPU a long video can take many
+# minutes; if it exceeds this limit we abort and fall back to a silent base.
+DEMUCS_TIMEOUT_SECONDS = int(os.getenv("DEMUCS_TIMEOUT_SECONDS", "1800"))
+
 # Opencode CLI translate mode (src/translator_opencode.py). Uses the installed
-# `opencode` CLI (local AI agent). Empty OPENCODE_MODEL_ID → CLI default.
+# `opencode` CLI (local AI agent). Empty OPENCODE_MODEL_ID -> CLI default.
 # OPENCODE_BIN is read directly by translator_opencode.py.
 OPENCODE_MODEL_ID = os.getenv("OPENCODE_MODEL_ID", "")
+
+# Default opencode model for the GUI dropdown. One of the 4 free models:
+#   opencode/nemotron-3-ultra-free (default, best translation quality)
+#   opencode/deepseek-v4-flash-free
+#   opencode/mimo-v2.5-free
+#   opencode/north-mini-code-free
+OPENCODE_DEFAULT_MODEL = os.getenv(
+    "OPENCODE_DEFAULT_MODEL", "opencode/nemotron-3-ultra-free"
+)
+
+# All free opencode models, shown in the GUI dropdown.
+OPENCODE_FREE_MODELS = [
+    "opencode/nemotron-3-ultra-free",
+    "opencode/deepseek-v4-flash-free",
+    "opencode/mimo-v2.5-free",
+    "opencode/north-mini-code-free",
+]
