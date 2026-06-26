@@ -100,6 +100,19 @@ def _get_default_vi_output_dir() -> str:
     return os.path.join(config.OUTPUT_DIR, "VN")
 
 
+def _vn_output_name(video_path: str) -> str:
+    """Final dubbed-video filename: the source name with a ``_vn`` suffix.
+
+    Mirrors the source video's name (e.g. ``MyClip.mp4`` → ``MyClip_vn.mp4``) so
+    outputs are easy to tell apart instead of every run producing the same
+    ``dubbed_video.mp4``. Guards against doubling the suffix on re-runs.
+    """
+    stem = os.path.splitext(os.path.basename(video_path))[0]
+    if stem.lower().endswith("_vn"):
+        return f"{stem}.mp4"
+    return f"{stem}_vn.mp4"
+
+
 def _ask_voice_gender() -> str:
     """Ask user to choose male or female voice. Returns voice ID."""
     print("\n" + "=" * 40)
@@ -226,9 +239,9 @@ def _resolve_video(work_dir: str, url: str | None, file_path: str | None,
     """Locate the source video for this work_dir.
 
     Resume-friendly: if a prior run already downloaded/copied the source video
-    into work_dir, reuse it instead of re-downloading. Skips any files whose
-    name matches a pipeline output (dubbed_video*.mp4) so we don't mistake the
-    rendered result for the source.
+    into work_dir, reuse it instead of re-downloading. Skips any files that look
+    like a pipeline output — the legacy dubbed_video*.mp4 name and the current
+    <source>_vn.mp4 name — so we don't mistake the rendered result for the source.
 
     If --file is passed, that takes precedence — useful when the user keeps
     the source outside work_dir.
@@ -243,6 +256,8 @@ def _resolve_video(work_dir: str, url: str | None, file_path: str | None,
     for f in sorted(os.listdir(work_dir)):
         lower = f.lower()
         if not lower.endswith(video_exts):
+            continue
+        if lower.endswith("_vn.mp4"):
             continue
         if any(lower.startswith(prefix) for prefix in output_prefixes):
             continue
@@ -434,7 +449,7 @@ def run_pipeline_vi(
     if not skip_video:
         logger.info("=" * 60)
         logger.info("STEP 7: Creating dubbed video")
-        dubbed_video_path = os.path.join(work_dir, "dubbed_video.mp4")
+        dubbed_video_path = os.path.join(work_dir, _vn_output_name(video_path))
         merge_video(video_path, merged_audio_path, dubbed_video_path)
 
     # --- Step 8: Generate thumbnails + YouTube metadata ---

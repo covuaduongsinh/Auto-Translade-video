@@ -118,7 +118,7 @@ output/VN/20260601120000_vi/
 ├── transcript_vi.srt
 ├── segments/seg_xxx.wav            # TTS từng segment
 ├── dubbed_audio.wav                # audio cuối (VI + BGM)
-└── dubbed_video.mp4                # video cuối
+└── <tên_gốc>_vn.mp4                # video cuối (trùng tên video gốc + _vn)
 ```
 
 ## Tính năng

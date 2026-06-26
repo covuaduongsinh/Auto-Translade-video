@@ -95,7 +95,14 @@ def download_video(
 
     ydl_opts = {
         "format": _build_format(max_height, audio_only),
-        "outtmpl": os.path.join(output_dir, "%(id)s.%(ext)s"),
+        # Name the file by the video's title so the final dub inherits a
+        # human-readable name (<title>_vn.mp4). windowsfilenames replaces only
+        # the Windows-illegal characters (\ / : * ? " < > |) while keeping
+        # unicode, so EN/JA/ZH titles stay readable; trim_file_name guards
+        # against overrunning the Windows MAX_PATH limit on long titles.
+        "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
+        "windowsfilenames": True,
+        "trim_file_name": 150,
         "merge_output_format": "mp4",
         "quiet": False,
         "no_warnings": False,
@@ -109,13 +116,16 @@ def download_video(
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(canonical, download=True)
-        video_id = info.get("id", "video")
-        ext = info.get("ext", "mp4")
-        filepath = os.path.join(output_dir, f"{video_id}.{ext}")
+        # prepare_filename respects the outtmpl + yt-dlp's own sanitization, so
+        # it reflects the actual on-disk name (title-based) regardless of the
+        # template. After a merge the real file may carry the merge_output_format
+        # extension (.mp4), so fall back to a directory scan by stem if needed.
+        filepath = ydl.prepare_filename(info)
 
         if not os.path.exists(filepath):
+            stem = os.path.splitext(os.path.basename(filepath))[0]
             for f in os.listdir(output_dir):
-                if f.startswith(video_id):
+                if f.startswith(stem):
                     filepath = os.path.join(output_dir, f)
                     break
 
