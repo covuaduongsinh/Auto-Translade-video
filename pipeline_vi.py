@@ -6,6 +6,7 @@ Usage:
     python pipeline_vi.py --file video.mp4 --source-lang en
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import subprocess
@@ -373,39 +374,55 @@ def run_pipeline_vi(
         logger.warning("Translation pending — see TRANSLATE_PENDING.txt in work dir")
         return {"status": "translate_pending", "work_dir": work_dir}
 
-    # --- Step 5: TTS for each segment (LucyLab API) ---
+    # --- Step 5: TTS for each segment (run segments concurrently) ---
+    # The VI TTS backends (LucyLab/Vbee) are async job APIs (create → poll →
+    # download); the server processes jobs in parallel, so synthesizing several
+    # segments at once turns ~N sequential waits into ~1. Each segment writes its
+    # own seg_XXX.wav (and a unique .tmp), and requests/logging/pydub are all
+    # thread-safe, so a ThreadPoolExecutor is safe here.
     logger.info("=" * 60)
-    logger.info("STEP 5: Synthesizing Vietnamese audio (LucyLab TTS)")
     seg_dir = ensure_dir(os.path.join(work_dir, "segments"))
-    tts_results = []
     from pydub import AudioSegment as _ASeg
 
-    for seg in segments:
+    def _synth_one(seg: dict) -> dict:
+        """Synthesize (or reuse cached) one segment. Cache check preserves resume."""
         seg_path = os.path.join(seg_dir, f"seg_{seg['id']:03d}.wav")
         if os.path.exists(seg_path) and os.path.getsize(seg_path) > 0:
             cached = _ASeg.from_wav(seg_path)
-            result = {
+            return {
                 "path": seg_path,
                 "actual_duration": round(len(cached) / 1000.0, 3),
                 "speed_adjusted": False,
                 "rate_applied": "cached",
             }
+        return synthesize_segment_vi(
+            text_vi=seg["text_vi"],
+            output_path=seg_path,
+            target_duration=seg["duration"],
+            voice_id=voice_id,
+        )
+
+    workers = min(config.TTS_CONCURRENCY, len(segments)) or 1
+    logger.info(
+        f"STEP 5: Synthesizing Vietnamese audio "
+        f"({len(segments)} segments, {workers} song song)"
+    )
+
+    # Pre-allocate so results stay in segment order regardless of completion order
+    # (report/timing_guide zip segments with tts_results).
+    tts_results: list[dict] = [None] * len(segments)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        fut_to_idx = {ex.submit(_synth_one, seg): i for i, seg in enumerate(segments)}
+        for done, fut in enumerate(concurrent.futures.as_completed(fut_to_idx), 1):
+            i = fut_to_idx[fut]
+            seg = segments[i]
+            result = fut.result()  # re-raises on failure — keeps prior abort behavior
+            tts_results[i] = result
             logger.info(
-                f"  Segment {seg['id']}: cached ({result['actual_duration']:.1f}s, "
-                f"target {seg['duration']:.1f}s)"
+                f"  [{done}/{len(segments)}] Segment {seg['id']}: "
+                f"{result['actual_duration']:.1f}s (target: {seg['duration']:.1f}s, "
+                f"speed: {result['rate_applied']})"
             )
-        else:
-            result = synthesize_segment_vi(
-                text_vi=seg["text_vi"],
-                output_path=seg_path,
-                target_duration=seg["duration"],
-                voice_id=voice_id,
-            )
-            logger.info(
-                f"  Segment {seg['id']}: {result['actual_duration']:.1f}s "
-                f"(target: {seg['duration']:.1f}s, speed: {result['rate_applied']})"
-            )
-        tts_results.append(result)
 
     # --- Step 6: Slow down + Fit-to-timeline + Merge audio ---
     logger.info("=" * 60)

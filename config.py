@@ -41,6 +41,11 @@ VIETNAMESE_TTS_MAX_SPEED = float(os.getenv("VIETNAMESE_TTS_MAX_SPEED", "1.3"))
 # Vietnamese TTS backend: "lucylab" (default) or "vbee"
 TTS_BACKEND_VI = os.getenv("TTS_BACKEND_VI", "vbee").strip().lower()
 
+# Số segment TTS tổng hợp song song (STEP 5). Backend VI (LucyLab/Vbee) là API job
+# bất đồng bộ — tạo/poll nhiều job song song giúp rút ngắn STEP 5 nhiều lần. Giữ vừa
+# phải để tôn trọng giới hạn đồng thời của nhà cung cấp (tự retry 429 nếu vượt).
+TTS_CONCURRENCY = max(1, int(os.getenv("TTS_CONCURRENCY", "5")))
+
 # Vbee AIVoice TTS (https://studio.vbee.vn) — used when TTS_BACKEND_VI=vbee
 VBEE_APP_ID = os.getenv("VBEE_APP_ID", "")
 VBEE_TOKEN = os.getenv("VBEE_TOKEN", "")
