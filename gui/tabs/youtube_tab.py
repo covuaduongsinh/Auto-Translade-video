@@ -85,7 +85,7 @@ class YouTubeTab(TranslateGateMixin, ctk.CTkFrame):
                           variable=self.tts_var).pack(fill="x", padx=12)
 
         row("Chế độ dịch")
-        self.tmode_var = ctk.StringVar(value="Claude tự động (đọc & dịch)")
+        self.tmode_var = ctk.StringVar(value="Opencode tự động (đọc & dịch)")
         ctk.CTkOptionMenu(form, values=list(TRANSLATE_MODES.keys()),
                           variable=self.tmode_var).pack(fill="x", padx=12)
 

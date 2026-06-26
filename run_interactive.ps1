@@ -47,7 +47,7 @@ Write-Host "Sau do log tung STEP hien ra. (ASR bao loi 401 vi chua co key Azure.
 Write-Host "===================================================================="    -ForegroundColor Cyan
 Write-Host ""
 
-python pipeline_vi.py --resume $workdir --file $video
+& "C:\Users\duongsinh\AppData\Local\Programs\Python\Python314\python.exe" pipeline_vi.py --resume $workdir --file $video
 
 Write-Host ""
 Write-Host "============ KET THUC. Nhan Enter de dong cua so. ============" -ForegroundColor Cyan

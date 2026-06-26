@@ -82,3 +82,8 @@ CONTENT_MODEL_ID = os.getenv("content_model_id", "gemini-2.0-flash")
 # `claude` CLI (subscription, no API key). Empty CLAUDE_MODEL_ID → CLI default.
 # CLAUDE_BIN / CLAUDE_PERMISSION_MODE are read directly by translator_claude.py.
 CLAUDE_MODEL_ID = os.getenv("CLAUDE_MODEL_ID", "")
+
+# Opencode CLI translate mode (src/translator_opencode.py). Uses the installed
+# `opencode` CLI (local AI agent). Empty OPENCODE_MODEL_ID → CLI default.
+# OPENCODE_BIN is read directly by translator_opencode.py.
+OPENCODE_MODEL_ID = os.getenv("OPENCODE_MODEL_ID", "")

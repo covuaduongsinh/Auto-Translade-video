@@ -27,6 +27,8 @@ TRANSLATE_MODES = {
     "Trình soạn dịch (tự nhập)": "editor",
     "AI tự động (Gemini)": "ai",
     "AI tự động rồi xem lại": "ai_review",
+    "Opencode tự động (đọc & dịch)": "opencode",
+    "Opencode tự động rồi xem lại": "opencode_review",
     "Claude tự động (đọc & dịch)": "claude",
     "Claude tự động rồi xem lại": "claude_review",
     "Dịch ngoài app rồi Resume": "external",
@@ -57,6 +59,9 @@ class TranslateGateMixin:
         elif mode in ("ai", "ai_review"):
             self.status_var.set("Đang dịch tự động bằng AI…")
             self._run_ai_translate(work_dir, review=(mode == "ai_review"), finish=finish)
+        elif mode in ("opencode", "opencode_review"):
+            self.status_var.set("Đang nhờ opencode đọc thư mục & dịch…")
+            self._run_opencode_translate(work_dir, review=(mode == "opencode_review"), finish=finish)
         elif mode in ("claude", "claude_review"):
             self.status_var.set("Đang nhờ Claude đọc thư mục & dịch…")
             self._run_claude_translate(work_dir, review=(mode == "claude_review"), finish=finish)
@@ -92,6 +97,35 @@ class TranslateGateMixin:
                     # AI failed (e.g. no Gemini key) — don't waste phase 1; let the
                     # user fill the translation by hand instead of aborting.
                     self.status_var.set(f"⚠ Dịch AI lỗi, chuyển sang nhập tay: {msg}")
+                    TranslationEditor(self, work_dir, on_finish=finish)
+
+                self._ui_queue.put(fallback)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _run_opencode_translate(self, work_dir, review: bool, finish):
+        """Let the local opencode CLI read work_dir and write transcript_vi.json."""
+        from src.translator_opencode import translate_via_opencode_cli
+
+        self.status_var.set("Đang nhờ opencode đọc thư mục & dịch…")
+
+        def work():
+            try:
+                translate_via_opencode_cli(
+                    work_dir,
+                    source_lang=LANG_MAP.get(self.lang_var.get(), self.lang_var.get()),
+                    model=(config.OPENCODE_MODEL_ID or None),
+                )
+                if review:
+                    self._ui_queue.put(
+                        lambda: TranslationEditor(self, work_dir, on_finish=finish))
+                else:
+                    self._ui_queue.put(lambda: finish(True))
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+
+                def fallback():
+                    self.status_var.set(f"⚠ Opencode dịch lỗi, chuyển sang nhập tay: {msg}")
                     TranslationEditor(self, work_dir, on_finish=finish)
 
                 self._ui_queue.put(fallback)
@@ -137,10 +171,11 @@ class TranslateGateMixin:
         win.geometry("640x300")
         win.after(120, lambda: (win.lift(), win.focus_force()))
         msg = (
-            "Bấm “🤖 Nhờ Claude dịch tự động” để Claude tự đọc thư mục, dịch và tạo\n"
-            "transcript_vi.json — hoặc tự dịch file dưới đây sang tiếng Việt (qua\n"
-            "Claude/ChatGPT…), lưu thành transcript_vi.json (giữ id, thêm text_vi)\n"
-            "vào cùng thư mục rồi bấm “Tiếp tục”.\n\n"
+            "Bấm “⚡ Nhờ opencode dịch tự động” hoặc “🤖 Nhờ Claude dịch tự động”\n"
+            "để AI tự đọc thư mục, dịch và tạo transcript_vi.json — hoặc tự dịch\n"
+            "file dưới đây sang tiếng Việt (qua ChatGPT…), lưu thành\n"
+            "transcript_vi.json (giữ id, thêm text_vi) vào cùng thư mục rồi bấm\n"
+            "“Tiếp tục”.\n\n"
             f"Cần dịch:\n{orig}\n\nLưu thành:\n{vi}"
         )
         ctk.CTkLabel(win, text=msg, justify="left", wraplength=600).pack(
@@ -153,6 +188,10 @@ class TranslateGateMixin:
             else:
                 win.title("Dịch ngoài app — chưa thấy transcript_vi.json")
 
+        def ask_opencode():
+            win.destroy()
+            self._run_opencode_translate(work_dir, review=False, finish=finish)
+
         def ask_claude():
             win.destroy()
             self._run_claude_translate(work_dir, review=False, finish=finish)
@@ -163,5 +202,7 @@ class TranslateGateMixin:
                       command=lambda: (win.destroy(), finish(False))).pack(side="right")
         ctk.CTkButton(bar, text="Tiếp tục ▶", command=cont).pack(side="right", padx=8)
         ctk.CTkButton(bar, text="🤖 Nhờ Claude dịch tự động", fg_color="#7b5cff",
-                      hover_color="#6a4ce0", command=ask_claude).pack(side="left")
+                      hover_color="#6a4ce0", command=ask_claude).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bar, text="⚡ Nhờ opencode dịch tự động", fg_color="#2d8b4d",
+                      hover_color="#256f3d", command=ask_opencode).pack(side="left")
         win.protocol("WM_DELETE_WINDOW", lambda: (win.destroy(), finish(False)))
