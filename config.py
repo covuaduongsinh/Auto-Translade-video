@@ -83,6 +83,13 @@ CONTENT_MODEL_ID = os.getenv("content_model_id", "gemini-2.0-flash")
 # CLAUDE_BIN / CLAUDE_PERMISSION_MODE are read directly by translator_claude.py.
 CLAUDE_MODEL_ID = os.getenv("CLAUDE_MODEL_ID", "")
 
+# Default Claude model for the GUI dropdown. "sonnet" (rẻ/nhanh, đỡ tốn quota) là mặc định;
+# người dùng có thể đổi sang "haiku" hoặc "opus". Tôn trọng CLAUDE_MODEL_ID nếu đã đặt.
+CLAUDE_DEFAULT_MODEL = os.getenv("CLAUDE_DEFAULT_MODEL", CLAUDE_MODEL_ID or "sonnet")
+CLAUDE_MODELS = ["sonnet", "haiku", "opus"]
+if CLAUDE_DEFAULT_MODEL not in CLAUDE_MODELS:        # cho phép model id tuỳ chỉnh từ env
+    CLAUDE_MODELS = [CLAUDE_DEFAULT_MODEL, *CLAUDE_MODELS]
+
 # Demucs vocal-separation timeout (seconds). On CPU a long video can take many
 # minutes; if it exceeds this limit we abort and fall back to a silent base.
 DEMUCS_TIMEOUT_SECONDS = int(os.getenv("DEMUCS_TIMEOUT_SECONDS", "1800"))

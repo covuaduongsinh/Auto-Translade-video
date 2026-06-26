@@ -94,6 +94,11 @@ class YouTubeTab(TranslateGateMixin, ctk.CTkFrame):
         ctk.CTkOptionMenu(form, values=config.OPENCODE_FREE_MODELS,
                           variable=self.opencode_model_var).pack(fill="x", padx=12)
 
+        row("Model dịch (Claude)")
+        self.claude_model_var = ctk.StringVar(value=config.CLAUDE_DEFAULT_MODEL)
+        ctk.CTkOptionMenu(form, values=config.CLAUDE_MODELS,
+                          variable=self.claude_model_var).pack(fill="x", padx=12)
+
         row("Âm nền gốc")
         self.bg_var = ctk.StringVar(value="duck")
         ctk.CTkOptionMenu(form, values=["demucs", "duck", "none"], variable=self.bg_var,
@@ -257,6 +262,7 @@ class YouTubeTab(TranslateGateMixin, ctk.CTkFrame):
             on_done=lambda report: self._ui_queue.put(lambda: self._on_done(report)),
             on_error=lambda exc: self._ui_queue.put(lambda: self._on_error(exc)),
             opencode_model=self.opencode_model_var.get(),
+            claude_model=self.claude_model_var.get(),
         )
         self.worker.start()
 

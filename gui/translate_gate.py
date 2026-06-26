@@ -37,14 +37,16 @@ TRANSLATE_MODES = {
 
 class TranslateGateMixin:
     # ----- translate gate: called on WORKER thread, blocks until UI is done ----
-    def _gate_handler(self, work_dir: str, *, opencode_model: str | None = None) -> bool:
+    def _gate_handler(self, work_dir: str, *, opencode_model: str | None = None,
+                      claude_model: str | None = None) -> bool:
         ev = threading.Event()
         holder = {"proceed": False}
-        self._ui_queue.put(lambda: self._open_gate(work_dir, ev, holder, opencode_model))
+        self._ui_queue.put(
+            lambda: self._open_gate(work_dir, ev, holder, opencode_model, claude_model))
         ev.wait()
         return holder["proceed"]
 
-    def _open_gate(self, work_dir, ev, holder, opencode_model=None):
+    def _open_gate(self, work_dir, ev, holder, opencode_model=None, claude_model=None):
         mode = TRANSLATE_MODES[self.tmode_var.get()]
 
         def finish(proceed: bool):
@@ -69,9 +71,14 @@ class TranslateGateMixin:
             )
         elif mode in ("claude", "claude_review"):
             self.status_var.set("Đang nhờ Claude đọc thư mục & dịch…")
-            self._run_claude_translate(work_dir, review=(mode == "claude_review"), finish=finish)
+            self._run_claude_translate(
+                work_dir,
+                review=(mode == "claude_review"),
+                finish=finish,
+                model=claude_model,
+            )
         elif mode == "external":
-            self._open_external_gate(work_dir, finish)
+            self._open_external_gate(work_dir, finish, opencode_model, claude_model)
 
     def _run_ai_translate(self, work_dir, review: bool, finish):
         from src.translator import translate_transcript
@@ -137,7 +144,7 @@ class TranslateGateMixin:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _run_claude_translate(self, work_dir, review: bool, finish):
+    def _run_claude_translate(self, work_dir, review: bool, finish, model: str | None = None):
         """Let the local Claude Code CLI read work_dir and write transcript_vi.json."""
         from src.translator_claude import translate_via_claude_cli
 
@@ -148,7 +155,7 @@ class TranslateGateMixin:
                 translate_via_claude_cli(
                     work_dir,
                     source_lang=LANG_MAP.get(self.lang_var.get(), self.lang_var.get()),
-                    model=(config.CLAUDE_MODEL_ID or None),
+                    model=(model or config.CLAUDE_MODEL_ID or None),
                 )
                 if review:
                     self._ui_queue.put(
@@ -168,7 +175,7 @@ class TranslateGateMixin:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _open_external_gate(self, work_dir, finish):
+    def _open_external_gate(self, work_dir, finish, opencode_model=None, claude_model=None):
         orig = os.path.join(work_dir, "transcript_original.json")
         vi = os.path.join(work_dir, "transcript_vi.json")
         win = ctk.CTkToplevel(self)
@@ -195,11 +202,13 @@ class TranslateGateMixin:
 
         def ask_opencode():
             win.destroy()
-            self._run_opencode_translate(work_dir, review=False, finish=finish)
+            self._run_opencode_translate(work_dir, review=False, finish=finish,
+                                         model=opencode_model)
 
         def ask_claude():
             win.destroy()
-            self._run_claude_translate(work_dir, review=False, finish=finish)
+            self._run_claude_translate(work_dir, review=False, finish=finish,
+                                       model=claude_model)
 
         bar = ctk.CTkFrame(win, fg_color="transparent")
         bar.pack(fill="x", padx=16, pady=(0, 14))

@@ -78,6 +78,10 @@ class BatchTab(ctk.CTkFrame):
         self.opencode_model_var = ctk.StringVar(value=config.OPENCODE_DEFAULT_MODEL)
         ctk.CTkOptionMenu(bar, width=160, variable=self.opencode_model_var,
                           values=config.OPENCODE_FREE_MODELS).pack(side="left")
+        ctk.CTkLabel(bar, text="Claude:").pack(side="left", padx=(12, 4))
+        self.claude_model_var = ctk.StringVar(value=config.CLAUDE_DEFAULT_MODEL)
+        ctk.CTkOptionMenu(bar, width=110, variable=self.claude_model_var,
+                          values=config.CLAUDE_MODELS).pack(side="left")
 
         self.status_var = ctk.StringVar(value="Chưa nạp danh sách.")
         ctk.CTkLabel(self, textvariable=self.status_var, anchor="w").grid(
@@ -321,7 +325,7 @@ class BatchTab(ctk.CTkFrame):
                         translate_via_claude_cli(
                             work_dir,
                             source_lang=source_lang,
-                            model=(config.CLAUDE_MODEL_ID or None),
+                            model=self.claude_model_var.get(),
                         )
                     else:  # opencode (default)
                         translate_via_opencode_cli(
