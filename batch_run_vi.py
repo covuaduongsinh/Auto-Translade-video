@@ -51,11 +51,11 @@ def main():
     )
     args = parser.parse_args()
 
-    # Resolve voice ID
+    # Resolve voice ID (backend-aware via config.vi_voice; honours TTS_BACKEND_VI)
     if args.voice == "male":
-        voice_id = config.VIETNAMESE_VOICEID_MALE
+        voice_id = config.vi_voice("male")
     elif args.voice == "female":
-        voice_id = config.VIETNAMESE_VOICEID_FEMALE
+        voice_id = config.vi_voice("female")
     else:
         voice_id = _ask_voice_gender()
 

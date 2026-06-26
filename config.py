@@ -12,9 +12,18 @@ def _require_env(key: str) -> str:
         sys.exit(1)
     return value
 
-# Required
-AZURE_SPEECH_KEY = _require_env("AZURE_SPEECH_KEY")
-AZURE_SPEECH_REGION = _require_env("AZURE_SPEECH_REGION")
+# ASR backend selection: "groq" (Groq Whisper, default) or "azure" (Azure Speech)
+ASR_BACKEND = os.getenv("ASR_BACKEND", "groq").strip().lower()
+
+# Azure Speech — optional now. Only required when ASR_BACKEND=azure (ASR) or for
+# Japanese TTS (pipeline.py). Validated lazily by the code paths that need it.
+AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
+AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "japaneast")
+
+# Groq Whisper ASR (https://console.groq.com)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3")
+GROQ_API_URL = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1/audio/transcriptions")
 
 # Optional with defaults
 TTS_VOICE = os.getenv("TTS_VOICE", "ja-JP-KeitaNeural")
@@ -28,6 +37,33 @@ VIETNAMESE_VOICEID_MALE = os.getenv("VIETNAMESE_VOICEID_MALE", "")
 VIETNAMESE_VOICEID_FEMALE = os.getenv("VIETNAMESE_VOICEID_FEMALE", "")
 LUCYLAB_API_URL = os.getenv("LUCYLAB_API_URL", "https://api.lucylab.io/json-rpc")
 VIETNAMESE_TTS_MAX_SPEED = float(os.getenv("VIETNAMESE_TTS_MAX_SPEED", "1.3"))
+
+# Vietnamese TTS backend: "lucylab" (default) or "vbee"
+TTS_BACKEND_VI = os.getenv("TTS_BACKEND_VI", "vbee").strip().lower()
+
+# Vbee AIVoice TTS (https://studio.vbee.vn) — used when TTS_BACKEND_VI=vbee
+VBEE_APP_ID = os.getenv("VBEE_APP_ID", "")
+VBEE_TOKEN = os.getenv("VBEE_TOKEN", "")
+VBEE_API_URL = os.getenv("VBEE_API_URL", "https://vbee.vn/api/v1/tts")
+VBEE_VOICE_MALE = os.getenv("VBEE_VOICE_MALE", "")
+VBEE_VOICE_FEMALE = os.getenv("VBEE_VOICE_FEMALE", "")
+VBEE_AUDIO_TYPE = os.getenv("VBEE_AUDIO_TYPE", "mp3")
+VBEE_BITRATE = int(os.getenv("VBEE_BITRATE", "128"))
+# Vbee requires callback_url even when polling; a dummy URL is fine since we poll
+# the GET endpoint for the result rather than receiving the callback.
+VBEE_CALLBACK_URL = os.getenv("VBEE_CALLBACK_URL", "https://example.com/vbee-callback")
+
+
+def vi_voice(gender: str) -> str:
+    """Return the voice id/code for the active VI TTS backend.
+
+    gender = 'male' | 'female'. Picks the Vbee voice_code when TTS_BACKEND_VI=vbee,
+    otherwise the LucyLab userVoiceId. Reads TTS_BACKEND_VI dynamically so a CLI
+    override (e.g. pipeline_vi.py --tts-backend) takes effect.
+    """
+    if TTS_BACKEND_VI == "vbee":
+        return VBEE_VOICE_MALE if gender == "male" else VBEE_VOICE_FEMALE
+    return VIETNAMESE_VOICEID_MALE if gender == "male" else VIETNAMESE_VOICEID_FEMALE
 # Slow down factor for Vietnamese audio (0.82 = 18% slower, 1.0 = no change)
 AUDIO_SLOW_FACTOR = float(os.getenv("AUDIO_SLOW_FACTOR", "0.82"))
 VIETNAMESE_OUTPUT_DIR = os.getenv("VIETNAMESE_OUTPUT_DIR", "")
@@ -41,3 +77,8 @@ VIDEO_URL = os.getenv("VIDEO_URL", "")
 GOOGLE_API_KEY = os.getenv("google_api_key", os.getenv("GOOGLE_API_KEY", ""))
 IMAGE_MODEL_ID = os.getenv("image_model_id", "gemini-2.0-flash-exp")
 CONTENT_MODEL_ID = os.getenv("content_model_id", "gemini-2.0-flash")
+
+# Claude Code CLI translate mode (src/translator_claude.py). Uses the installed
+# `claude` CLI (subscription, no API key). Empty CLAUDE_MODEL_ID → CLI default.
+# CLAUDE_BIN / CLAUDE_PERMISSION_MODE are read directly by translator_claude.py.
+CLAUDE_MODEL_ID = os.getenv("CLAUDE_MODEL_ID", "")

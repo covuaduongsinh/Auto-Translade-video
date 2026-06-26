@@ -111,11 +111,11 @@ def _ask_voice_gender() -> str:
     while True:
         choice = input("Nhập 1 hoặc 2 (Enter 1 or 2): ").strip()
         if choice == "1":
-            voice_id = config.VIETNAMESE_VOICEID_MALE
+            voice_id = config.vi_voice("male")
             logger.info(f"Selected: Male voice ({voice_id})")
             return voice_id
         elif choice == "2":
-            voice_id = config.VIETNAMESE_VOICEID_FEMALE
+            voice_id = config.vi_voice("female")
             logger.info(f"Selected: Female voice ({voice_id})")
             return voice_id
         else:
@@ -138,6 +138,12 @@ def parse_args() -> argparse.Namespace:
         choices=["male", "female"],
         default=None,
         help="Voice gender: male or female (if not set, will ask interactively)",
+    )
+    parser.add_argument(
+        "--tts-backend",
+        choices=["lucylab", "vbee"],
+        default=None,
+        help=f"Vietnamese TTS backend (default: TTS_BACKEND_VI from .env = {config.TTS_BACKEND_VI})",
     )
     parser.add_argument(
         "--skip-video",
@@ -192,16 +198,22 @@ def parse_args() -> argparse.Namespace:
         else:
             parser.error("No video specified. Use --url, --file, --resume, or set VIETNAMESE_VIDEO_URL in .env")
 
+    # Resolve TTS backend: CLI flag overrides the TTS_BACKEND_VI env var. Must run
+    # before voice resolution so config.vi_voice() picks the right backend's voices.
+    if args.tts_backend:
+        config.TTS_BACKEND_VI = args.tts_backend
+    logger.info(f"Vietnamese TTS backend: {config.TTS_BACKEND_VI}")
+
     # Resolve voice ID: CLI flag > .env Voice_type > interactive prompt
     if args.voice == "male":
-        args.voice_id = config.VIETNAMESE_VOICEID_MALE
+        args.voice_id = config.vi_voice("male")
     elif args.voice == "female":
-        args.voice_id = config.VIETNAMESE_VOICEID_FEMALE
+        args.voice_id = config.vi_voice("female")
     elif config.VOICE_TYPE == "male":
-        args.voice_id = config.VIETNAMESE_VOICEID_MALE
+        args.voice_id = config.vi_voice("male")
         logger.info("Using VOICE_TYPE=male from .env")
     elif config.VOICE_TYPE == "female":
-        args.voice_id = config.VIETNAMESE_VOICEID_FEMALE
+        args.voice_id = config.vi_voice("female")
         logger.info("Using VOICE_TYPE=female from .env")
     else:
         args.voice_id = _ask_voice_gender()
@@ -209,7 +221,8 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def _resolve_video(work_dir: str, url: str | None, file_path: str | None) -> str:
+def _resolve_video(work_dir: str, url: str | None, file_path: str | None,
+                   download_quality: dict | None = None) -> str:
     """Locate the source video for this work_dir.
 
     Resume-friendly: if a prior run already downloaded/copied the source video
@@ -238,7 +251,10 @@ def _resolve_video(work_dir: str, url: str | None, file_path: str | None) -> str
         return cached
 
     if url:
-        return download_video(url, work_dir)
+        q = download_quality or {}
+        return download_video(url, work_dir,
+                              max_height=q.get("max_height"),
+                              audio_only=q.get("audio_only", False))
 
     raise RuntimeError(
         f"No source video found in {work_dir} and no --url/--file given. "
@@ -256,6 +272,7 @@ def run_pipeline_vi(
     resume_dir: str | None = None,
     bg_mode: str = "demucs",
     bg_duck_db: float = -12.0,
+    download_quality: dict | None = None,
 ) -> dict:
     start_time = time.time()
 
@@ -281,7 +298,7 @@ def run_pipeline_vi(
     # --- Step 1: Download or use local file ---
     logger.info("=" * 60)
     logger.info("STEP 1: Acquiring video")
-    video_path = _resolve_video(work_dir, url, file_path)
+    video_path = _resolve_video(work_dir, url, file_path, download_quality)
     logger.info(f"Video: {video_path}")
 
     # --- Step 2: Extract audio ---

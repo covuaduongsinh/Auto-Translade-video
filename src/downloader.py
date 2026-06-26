@@ -1,10 +1,50 @@
 import os
+import shutil
+import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 import yt_dlp
 from src.utils import setup_logging, ensure_dir
 
 logger = setup_logging("downloader")
+
+
+def _js_runtime_opts() -> dict:
+    """Enable a local JavaScript runtime so yt-dlp can solve YouTube's player
+    challenge ("n"/nsig). Recent YouTube refuses downloads otherwise, failing
+    with a misleading "This video is not available".
+
+    The challenge solver itself comes from the locally-installed yt-dlp-ejs
+    package (a normal pip dependency) — no remote code is fetched at runtime.
+    Returns {} if no runtime is found, so other sites still work.
+    """
+    for runtime in ("deno", "node", "nodejs"):
+        if shutil.which(runtime):
+            name = "node" if runtime == "nodejs" else runtime
+            # The Python API wants {runtime: {config}} (the CLI builds this from
+            # --js-runtimes); an empty config dict uses the runtime's defaults.
+            return {"js_runtimes": {name: {}}}
+    logger.warning(
+        "No JavaScript runtime (node/deno) found — YouTube downloads may fail. "
+        "Install Node.js or Deno, and the yt-dlp-ejs package."
+    )
+    return {}
+
+
+def _build_format(max_height: int | None, audio_only: bool) -> str:
+    """Build a yt-dlp format string from a quality choice.
+
+    Default (max_height=None, audio_only=False) reproduces the original
+    "best mp4" behaviour so existing CLI/batch callers are unaffected.
+    """
+    if audio_only:
+        return "bestaudio[ext=m4a]/bestaudio/best"
+    if max_height:
+        return (
+            f"bestvideo[ext=mp4][height<={max_height}]+bestaudio[ext=m4a]/"
+            f"best[ext=mp4][height<={max_height}]/best"
+        )
+    return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 
 
 def normalize_url(url: str) -> str:
@@ -29,7 +69,12 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def download_video(url: str, output_dir: str) -> str:
+def download_video(
+    url: str,
+    output_dir: str,
+    max_height: int | None = None,
+    audio_only: bool = False,
+) -> str:
     if not url:
         raise ValueError("URL cannot be empty")
 
@@ -49,11 +94,15 @@ def download_video(url: str, output_dir: str) -> str:
         logger.info(f"Normalized URL: {url} -> {canonical}")
 
     ydl_opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": _build_format(max_height, audio_only),
         "outtmpl": os.path.join(output_dir, "%(id)s.%(ext)s"),
         "merge_output_format": "mp4",
         "quiet": False,
         "no_warnings": False,
+        # A watch URL may carry &list=…; grab only that one video, not the whole
+        # playlist. A pure /playlist?list=… URL still expands normally.
+        "noplaylist": True,
+        **_js_runtime_opts(),
     }
 
     logger.info(f"Downloading video from: {canonical}")
@@ -78,6 +127,72 @@ def download_video(url: str, output_dir: str) -> str:
 
 
 def get_video_id(url: str) -> str:
-    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+    with yt_dlp.YoutubeDL({"quiet": True, **_js_runtime_opts()}) as ydl:
         info = ydl.extract_info(url, download=False)
         return info.get("id", "video")
+
+
+def fetch_video_info(url: str) -> dict:
+    """Probe a URL without downloading and return preview metadata.
+
+    For a single video returns title/uploader/duration/thumbnail. For a
+    playlist returns a flat list of entries (id/title/url/duration) so the GUI
+    can show them before committing to a download.
+    """
+    if not url:
+        raise ValueError("URL cannot be empty")
+
+    canonical = normalize_url(url)
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": "in_playlist",
+        # watch?v=X&list=Y → preview just video X; /playlist?list=Y → full list.
+        "noplaylist": True,
+        **_js_runtime_opts(),
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(canonical, download=False)
+
+    if info.get("_type") == "playlist":
+        entries = []
+        for e in info.get("entries") or []:
+            if not e:
+                continue
+            vid = e.get("id", "")
+            entries.append({
+                "id": vid,
+                "title": e.get("title", vid or "(không tiêu đề)"),
+                "url": e.get("url") or (
+                    f"https://www.youtube.com/watch?v={vid}" if vid else ""),
+                "duration": e.get("duration"),
+            })
+        return {
+            "is_playlist": True,
+            "title": info.get("title", "Playlist"),
+            "entries": entries,
+        }
+
+    return {
+        "is_playlist": False,
+        "id": info.get("id", ""),
+        "title": info.get("title", "(không tiêu đề)"),
+        "uploader": info.get("uploader") or info.get("channel") or "",
+        "duration": info.get("duration"),
+        "thumbnail": info.get("thumbnail", ""),
+        "webpage_url": info.get("webpage_url", canonical),
+    }
+
+
+def fetch_thumbnail(url: str) -> bytes | None:
+    """Download thumbnail image bytes for GUI preview. Returns None on failure."""
+    if not url:
+        return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read()
+    except Exception as e:  # noqa: BLE001 - preview is best-effort
+        logger.warning(f"Thumbnail fetch failed: {e}")
+        return None
