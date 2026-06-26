@@ -36,6 +36,8 @@ class BatchTab(ctk.CTkFrame):
         self.videos: list[dict] = []
         self.path: str | None = None
         self._rows: dict = {}
+        self._video_cells: list = []     # các ô cột Video, để cập nhật wraplength
+        self._wrap_px = 600              # bề rộng wrap mặc định ban đầu (px)
         self._ui_queue: "queue.Queue" = queue.Queue()
         self._running = False
 
@@ -91,8 +93,17 @@ class BatchTab(ctk.CTkFrame):
         self.table.grid(row=2, column=0, sticky="nsew", padx=4, pady=4)
         for i, w in enumerate((0, 1, 0, 0)):
             self.table.grid_columnconfigure(i, weight=w)
+        self.table.bind("<Configure>", self._on_table_resize)
 
         self._poll()
+
+    def _on_table_resize(self, event):
+        new_px = max(event.width - 320, 200)
+        if abs(new_px - self._wrap_px) < 8:   # tránh cập nhật/nhấp nháy thừa
+            return
+        self._wrap_px = new_px
+        for cell in self._video_cells:
+            cell.configure(wraplength=new_px)
 
     # --------------------------------------------------------------- load ----
     def _load(self):
@@ -242,6 +253,7 @@ class BatchTab(ctk.CTkFrame):
         for w in self.table.winfo_children():
             w.destroy()
         self._rows.clear()
+        self._video_cells.clear()
         headers = ["ID", "Video", "Giọng", "Trạng thái"]
         for c, h in enumerate(headers):
             ctk.CTkLabel(self.table, text=h, font=ctk.CTkFont(weight="bold")).grid(
@@ -250,8 +262,10 @@ class BatchTab(ctk.CTkFrame):
             ctk.CTkLabel(self.table, text=str(v.get("id", r))).grid(
                 row=r, column=0, sticky="w", padx=6, pady=2)
             url = v.get("video_url", "")
-            ctk.CTkLabel(self.table, text=(url[:60] + "…") if len(url) > 60 else url,
-                         anchor="w").grid(row=r, column=1, sticky="w", padx=6, pady=2)
+            cell = ctk.CTkLabel(self.table, text=url, anchor="w", justify="left",
+                                wraplength=self._wrap_px)
+            cell.grid(row=r, column=1, sticky="w", padx=6, pady=2)
+            self._video_cells.append(cell)
             ctk.CTkLabel(self.table, text=v.get("voice_type", "male")).grid(
                 row=r, column=2, sticky="w", padx=6, pady=2)
             st = ctk.CTkLabel(self.table, text=v.get("status", "waiting"),
